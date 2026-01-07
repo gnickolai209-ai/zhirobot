@@ -5,7 +5,7 @@ import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-TOKEN = ("BOT_TOKEN")
+TOKEN = "8396283072:AAFkUveM3dx2EFXlAaeyrpvGHEfZM5RuGGk"
 BOT_USERNAME = "Zhiiiiiiiiiirbot"
 
 print("=" * 50)
