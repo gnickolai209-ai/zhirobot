@@ -1,94 +1,79 @@
+import os
 import random
 import time
 import sqlite3
-import os
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
 
+logging.basicConfig(level=logging.INFO)
+
+# === ТОКЕН ТОЛЬКО ИЗ ENV (Render) ===
 TOKEN = os.getenv(8396283072:AAET9idaFvPuZy-D6XBTY1qCv34VIXVEIzM)
 BOT_USERNAME = "Zhiiiiiiiiiirbot"
 
-DB_PATH = "zhirobot.db"
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN not set in environment variables")
 
+# === БАЗА ДАННЫХ (SQLite, сохраняется пока сервис живёт) ===
+conn = sqlite3.connect("zhirobot.db", check_same_thread=False)
+c = conn.cursor()
 
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER,
-        chat_id INTEGER,
-        name TEXT,
-        attempts INTEGER DEFAULT 0,
-        successful INTEGER DEFAULT 0,
-        failed INTEGER DEFAULT 0,
-        weight INTEGER DEFAULT 0,
-        last_time INTEGER DEFAULT 0,
-        PRIMARY KEY (user_id, chat_id)
-    )
-    """)
-    conn.commit()
-    conn.close()
+c.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER,
+    chat_id INTEGER,
+    name TEXT,
+    attempts INTEGER DEFAULT 0,
+    successful INTEGER DEFAULT 0,
+    failed INTEGER DEFAULT 0,
+    weight INTEGER DEFAULT 0,
+    last_time INTEGER DEFAULT 0,
+    PRIMARY KEY (user_id, chat_id)
+)
+""")
+conn.commit()
 
-
-def get_user(user_id, chat_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-    SELECT attempts, successful, failed, weight, last_time
-    FROM users WHERE user_id=? AND chat_id=?
-    """, (user_id, chat_id))
-    row = c.fetchone()
-    conn.close()
-    return row
-
-
-def save_user(user_id, chat_id, name, attempts, successful, failed, weight, last_time):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-    INSERT INTO users (user_id, chat_id, name, attempts, successful, failed, weight, last_time)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, chat_id) DO UPDATE SET
-        name=excluded.name,
-        attempts=excluded.attempts,
-        successful=excluded.successful,
-        failed=excluded.failed,
-        weight=excluded.weight,
-        last_time=excluded.last_time
-    """, (user_id, chat_id, name, attempts, successful, failed, weight, last_time))
-    conn.commit()
-    conn.close()
-
-
+# === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton(
-        "➕ Добавить в группу",
-        url=f"https://t.me/{BOT_USERNAME}?startgroup=true"
-    )]]
-
+    keyboard = [[
+        InlineKeyboardButton(
+            "➕ Добавить в группу",
+            url=f"https://t.me/{BOT_USERNAME}?startgroup=true"
+        )
+    ]]
     await update.message.reply_text(
         "🤖 Привет! Я — Жиробот!\n"
-        "Пиши /zhiret и становись самым жирным 💪",
+        "Жирей, соревнуйся и попадай в топ 🏆",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-
+# === /zhiret ===
 async def zhiret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
     now = int(time.time())
 
-    data = get_user(user.id, chat.id)
+    c.execute(
+        "SELECT weight, last_time, attempts, successful, failed FROM users WHERE user_id=? AND chat_id=?",
+        (user.id, chat.id)
+    )
+    row = c.fetchone()
 
-    if data:
-        attempts, successful, failed, weight, last_time = data
+    if row:
+        weight, last_time, attempts, successful, failed = row
         if now - last_time < 600:
-            mins = 10 - (now - last_time) // 60
-            await update.message.reply_text(f"⏳ Подожди {mins} минут")
+            minutes = 10 - (now - last_time) // 60
+            await update.message.reply_text(f"⏳ Подожди {minutes} минут")
             return
     else:
-        attempts = successful = failed = weight = 0
+        weight = attempts = successful = failed = 0
 
     attempts += 1
     success = random.random() >= 0.2
@@ -100,95 +85,106 @@ async def zhiret(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )[0]
         weight += kg
         successful += 1
-        await update.message.reply_text(f"🍔 +{kg}кг\n⚖️ Вес: {weight}кг")
+        await update.message.reply_text(
+            f"🍔 Ты нажрал +{kg}кг!\n"
+            f"🏋️ Текущий вес: {weight}кг"
+        )
     else:
         failed += 1
-        await update.message.reply_text("😭 Не получилось")
+        await update.message.reply_text("😭 Сегодня не получилось пожиреть")
 
-    save_user(
-        user.id, chat.id, user.first_name,
-        attempts, successful, failed, weight, now
-    )
+    c.execute("""
+        REPLACE INTO users VALUES (?,?,?,?,?,?,?,?)
+    """, (user.id, chat.id, user.first_name, attempts, successful, failed, weight, now))
+    conn.commit()
 
-
+# === /myzhir ===
 async def myzhir(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
 
-    data = get_user(user.id, chat.id)
+    c.execute(
+        "SELECT attempts, successful, failed, weight FROM users WHERE user_id=? AND chat_id=?",
+        (user.id, chat.id)
+    )
+    row = c.fetchone()
 
-    if not data:
-        await update.message.reply_text("📭 Напиши /zhiret")
+    if not row:
+        await update.message.reply_text("📭 Сначала напиши /zhiret")
         return
 
-    attempts, successful, failed, weight, _ = data
+    attempts, successful, failed, weight = row
     await update.message.reply_text(
         f"👤 {user.first_name}\n"
-        f"🔄 Попытки: {attempts}\n"
-        f"⚖️ Вес: {weight}кг\n"
-        f"✅ Успехи: {successful}\n"
-        f"❌ Неудачи: {failed}"
+        f"🔄 Попыток: {attempts}\n"
+        f"🏋️ Вес: {weight}кг\n"
+        f"✅ Успехов: {successful}\n"
+        f"❌ Неудач: {failed}"
     )
 
-
+# === /topzhirovchata ===
 async def topzhirovchata(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-    SELECT name, weight FROM users
-    WHERE chat_id=?
-    ORDER BY weight DESC LIMIT 10
-    """, (chat.id,))
+    c.execute(
+        "SELECT name, weight FROM users WHERE chat_id=? ORDER BY weight DESC LIMIT 10",
+        (chat.id,)
+    )
     rows = c.fetchall()
-    conn.close()
 
     if not rows:
-        await update.message.reply_text("📭 Пока пусто")
+        await update.message.reply_text("📭 В чате ещё никто не жирел")
         return
 
-    text = "🏆 Топ чата:\n"
+    text = "🏆 Топ жиробасов чата:\n"
     for i, (name, weight) in enumerate(rows, 1):
         text += f"{i}. {name} — {weight}кг\n"
 
     await update.message.reply_text(text)
 
-
+# === /topzhirovglobal ===
 async def topzhirovglobal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
     c.execute("""
-    SELECT name, SUM(weight) FROM users
-    GROUP BY user_id
-    ORDER BY SUM(weight) DESC LIMIT 10
+        SELECT name, SUM(weight) FROM users
+        GROUP BY user_id
+        ORDER BY SUM(weight) DESC
+        LIMIT 10
     """)
     rows = c.fetchall()
-    conn.close()
 
     if not rows:
-        await update.message.reply_text("🌍 Пока пусто")
+        await update.message.reply_text("🌍 В мире ещё никто не жирел")
         return
 
-    text = "🌍 Мировой топ:\n"
+    text = "🌍 Мировой топ жиробасов:\n"
     for i, (name, weight) in enumerate(rows, 1):
         text += f"{i}. {name} — {weight}кг\n"
 
     await update.message.reply_text(text)
 
+# === /help ===
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "/zhiret — пожиреть\n"
+        "/myzhir — твоя статистика\n"
+        "/topzhirovchata — топ чата\n"
+        "/topzhirovglobal — мировой топ"
+    )
 
+# === ЗАПУСК ===
 def main():
-    init_db()
-    app = Application.builder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("zhiret", zhiret))
     app.add_handler(CommandHandler("myzhir", myzhir))
     app.add_handler(CommandHandler("topzhirovchata", topzhirovchata))
     app.add_handler(CommandHandler("topzhirovglobal", topzhirovglobal))
+    app.add_handler(CommandHandler("help", help_cmd))
 
-    print("🤖 Жиробот запущен")
     app.run_polling()
 
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
